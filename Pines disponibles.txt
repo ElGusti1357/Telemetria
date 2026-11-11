@@ -1,0 +1,37 @@
+Sí, después de asignar los pines para el módem, la SD, el GPS (que usa el módem), tus expansores I2C y el módulo Ethernet W5500, todavía quedan pines disponibles en el ESP32. Sin embargo, la mayoría de ellos tienen alguna limitación funcional que debes tener en cuenta.
+
+La placa T-A7670 expone 12 GPIO para el usuario a través de sus conectores de expansión, pero varios de ellos ya están siendo utilizados por las funciones que has implementado. Una vez descontados los pines del módem (26, 27, 25, 4, 5, 33, 12), la tarjeta SD (13, 14, 15, 2), el ADC de batería (35), tu bus I2C (21, 22) y tu módulo Ethernet (32 para CS y 18 para RST), la lista de pines restantes es la siguiente:
+
+🟢 Pines totalmente libres (sin restricciones importantes)
+Estos pines no están asignados a ninguna función crítica de la placa y pueden usarse como GPIO estándar (entrada o salida digital, y algunos con funciones alternativas):
+
+GPIO 16: Totalmente libre.
+
+GPIO 17: Totalmente libre.
+
+GPIO 19: Totalmente libre.
+
+GPIO 23: Totalmente libre.
+
+GPIO 0: Libre, aunque está conectado al botón BOOT de la placa. Puedes usarlo como GPIO si no necesitas la función de arranque en modo descarga.
+
+GPIO 18: En tu configuración actual lo estás usando para el reset del W5500 (W5500_RST_PIN), pero la placa en sí no le asigna una función interna, por lo que es un pin libre para el usuario.
+
+🟡 Pines disponibles con limitaciones (solo entrada o ADC)
+Estos pines existen y pueden usarse, pero no pueden configurarse como salidas digitales:
+
+GPIO 34: Pin de solo entrada (input-only). Ideal para un sensor o un botón, pero no para controlar un relé o un LED.
+
+GPIO 39: Pin de solo entrada (input-only), al igual que el 34.
+
+GPIO 36: Pin de solo entrada (input-only). En algunas revisiones de la placa (V1.4+) se usa para medir el voltaje del panel solar (BOARD_SOLAR_ADC_PIN). Si no usas esa función, puedes usarlo como entrada digital o analógica.
+
+GPIO 35: También es de solo entrada y está asignado a la medición del voltaje de la batería (BOARD_BAT_ADC_PIN). Podrías reutilizarlo si no necesitas monitorear la batería.
+
+⚠️ Pines a evitar (UART0 del USB)
+GPIO 1 (TX0) y GPIO 3 (RX0): Son los pines de la UART0, utilizados para la comunicación por el puerto USB serie (el monitor que usas para la consola). Aunque técnicamente son libres, no se recomienda usarlos para otros fines, ya que perderías la capacidad de depurar y comunicarte con la placa a través del puerto USB.
+
+💎 Resumen
+En total, tienes al menos 4 pines completamente libres (16, 17, 19, 23) y 4 pines de solo entrada (34, 36, 39, 35) que puedes aprovechar para conectar sensores adicionales, botones o incluso otro dispositivo I2C (compartiendo el bus 21/22).
+
+Si tu intención es añadir más salidas digitales, tu mejor opción sigue siendo utilizar los pines libres 16, 17, 19 o 23.

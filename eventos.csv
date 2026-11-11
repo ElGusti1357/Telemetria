@@ -1,0 +1,13 @@
+fecha_hora;evento;detalle
+T+10s;BOOT;inicio del sistema
+T+18s;MODEM_OK;
+T+22s;SIM_OK;
+T+24s;RED_OK;signal=29
+T+25s;GPS_ON;
+T+26s;SMS_TX;+5491154052645: Hola Gustavo
+T+10s;BOOT;inicio del sistema
+T+19s;MODEM_OK;
+T+23s;SIM_OK;
+T+25s;RED_OK;signal=28
+T+26s;GPS_ON;
+T+26s;SMS_TX;+5491154052645: Hola Gustavo

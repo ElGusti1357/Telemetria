@@ -1,0 +1,13 @@
+Correcciones:
+
+-Los mensajes deben respetara las ñ y los acentos, nada de senal en lugar de señal.
+
+========== MENSAJE RECIBIDO ==========
+Hay un mensaje nuevo!
+De    : 541154052645
+Fecha : 26/11/11,08:59:37-12
+Texto : Ni��o papa 
+======================================
+[LOG] T+2479s;SMS_RX;541154052645: Niño papa 
+[LOG] T+2479s;SMS_CMD;541154052645: Niño papa
+SMS: GSM 7 bits, 1 parte(s)

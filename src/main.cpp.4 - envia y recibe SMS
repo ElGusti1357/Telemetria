@@ -1,0 +1,365 @@
+/*
+  LilyGO T-A7670 (ESP32 + A7670) - Envío y recepción de SMS con TinyGSM-fork
+  Base: Random Nerd Tutorials (Rui Santos & Sara Santos)
+*/
+
+// PIN de la SIM, si tiene
+#define SIM_PIN ""
+
+// APN (Personal Argentina)
+#define NETWORK_APN "datos.personal.com"
+
+// --- SMS ---
+#define SMS_DESTINATION "+5491154052645"
+#define SMS_TEXT        "Hola Gustavo"
+
+#define TINY_GSM_RX_BUFFER 1024
+
+#define LILYGO_T_A7670
+
+#if defined(LILYGO_T_A7670)
+  #define MODEM_BAUDRATE                      (115200)
+  #define MODEM_DTR_PIN                       (25)
+  #define MODEM_TX_PIN                        (26)
+  #define MODEM_RX_PIN                        (27)
+  #define BOARD_PWRKEY_PIN                    (4)
+  #define BOARD_ADC_PIN                       (35)
+  #define BOARD_POWERON_PIN                   (12)
+  #define MODEM_RING_PIN                      (33)
+  #define MODEM_RESET_PIN                     (5)
+  #define BOARD_MISO_PIN                      (2)
+  #define BOARD_MOSI_PIN                      (15)
+  #define BOARD_SCK_PIN                       (14)
+  #define BOARD_SD_CS_PIN                     (13)
+  #define BOARD_BAT_ADC_PIN                   (35)
+  #define MODEM_RESET_LEVEL                   HIGH
+  #define SerialAT                            Serial1
+  #define MODEM_GPS_ENABLE_GPIO               (-1)
+  #define MODEM_GPS_ENABLE_LEVEL              (-1)
+  #ifndef TINY_GSM_MODEM_A7670
+    #define TINY_GSM_MODEM_A7670
+  #endif
+#endif
+
+// Hay que usar TinyGSM-fork de lewisxhe
+#include <TinyGsmClient.h>
+
+//#define DUMP_AT_COMMANDS
+#ifdef DUMP_AT_COMMANDS
+  #include <StreamDebugger.h>
+  StreamDebugger debugger(SerialAT, Serial);
+  TinyGsm modem(debugger);
+#else
+  TinyGsm modem(SerialAT);
+#endif
+
+// ---------- Recepción de SMS ----------
+String rxLine;
+bool waitingSmsBody = false;
+String smsSender, smsDate;
+bool smsIsUcs2 = false;
+
+// Devuelve el campo n (0,1,2...) de una cadena separada por comas
+String csvField(const String &s, int n) {
+  int start = 0;
+  for (int i = 0; i < n; i++) {
+    int c = s.indexOf(',', start);
+    if (c < 0) return "";
+    start = c + 1;
+  }
+  int e = s.indexOf(',', start);
+  return s.substring(start, e < 0 ? s.length() : e);
+}
+
+// 1 = en la consola, acentos/ñ salen como letras simples y el resto como [U+XXXX]
+// 0 = se envía UTF-8 real (usar solo si tu monitor lo muestra bien)
+#define CONSOLE_ASCII_ONLY 1
+
+String cpToAscii(uint32_t cp) {
+  if (cp < 0x80) return String((char)cp);
+  switch (cp) {
+    case 0xE1: case 0xE0: case 0xE4: return "a";
+    case 0xE9: case 0xE8: case 0xEB: return "e";
+    case 0xED: case 0xEC: case 0xEF: return "i";
+    case 0xF3: case 0xF2: case 0xF6: return "o";
+    case 0xFA: case 0xF9: case 0xFC: return "u";
+    case 0xC1: return "A";
+    case 0xC9: return "E";
+    case 0xCD: return "I";
+    case 0xD3: return "O";
+    case 0xDA: case 0xDC: return "U";
+    case 0xF1: return "n";
+    case 0xD1: return "N";
+    case 0xBF: return "?";
+    case 0xA1: return "!";
+  }
+  char buf[16];
+  snprintf(buf, sizeof(buf), "[U+%04X]", (unsigned)cp);
+  return String(buf);
+}
+
+// Convierte texto UCS2 en hexadecimal (UTF-16BE, ej: "D83DDE0A") a UTF-8
+// (o a ASCII legible si asciiOnly = true)
+String ucs2HexToUtf8(const String &hex, bool asciiOnly = false) {
+  String out;
+  size_t n = hex.length() / 4;
+  for (size_t i = 0; i < n; i++) {
+    uint32_t cp = strtoul(hex.substring(i * 4, i * 4 + 4).c_str(), NULL, 16);
+    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < n) {   // par sustituto (emojis)
+      uint32_t lo = strtoul(hex.substring((i + 1) * 4, (i + 1) * 4 + 4).c_str(), NULL, 16);
+      if (lo >= 0xDC00 && lo <= 0xDFFF) {
+        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+        i++;
+      }
+    }
+    if (asciiOnly) {
+      out += cpToAscii(cp);
+      continue;
+    }
+    if (cp < 0x80) {
+      out += (char)cp;
+    } else if (cp < 0x800) {
+      out += (char)(0xC0 | (cp >> 6));
+      out += (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+      out += (char)(0xE0 | (cp >> 12));
+      out += (char)(0x80 | ((cp >> 6) & 0x3F));
+      out += (char)(0x80 | (cp & 0x3F));
+    } else {
+      out += (char)(0xF0 | (cp >> 18));
+      out += (char)(0x80 | ((cp >> 12) & 0x3F));
+      out += (char)(0x80 | ((cp >> 6) & 0x3F));
+      out += (char)(0x80 | (cp & 0x3F));
+    }
+  }
+  return out;
+}
+
+void printIncomingSms(const String &sender, const String &date, const String &body) {
+  Serial.println();
+  Serial.println("========== MENSAJE RECIBIDO ==========");
+  Serial.println("Hay un mensaje nuevo!");
+  Serial.print("De    : "); Serial.println(sender);
+  Serial.print("Fecha : "); Serial.println(date);
+  Serial.print("Texto : "); Serial.println(body);
+  Serial.println("======================================");
+}
+
+// Procesa una línea completa que llegó del módem
+void handleModemLine(String line) {
+  line.trim();
+  if (line.length() == 0) return;
+
+  if (waitingSmsBody) {
+    // La línea siguiente a +CMT es el texto del SMS
+    printIncomingSms(smsSender, smsDate, smsIsUcs2 ? ucs2HexToUtf8(line, CONSOLE_ASCII_ONLY) : line);
+    waitingSmsBody = false;
+    return;
+  }
+
+  // Formato: +CMT: "+5491154052645","","26/11/05,10:20:30-12"
+  if (line.startsWith("+CMT:")) {
+    // Posiciones de las 6 comillas: remitente, alpha (vacío), fecha
+    int p[6];
+    int from = 0;
+    bool okQ = true;
+    for (int k = 0; k < 6; k++) {
+      p[k] = line.indexOf('"', from);
+      if (p[k] < 0) { okQ = false; break; }
+      from = p[k] + 1;
+    }
+    smsSender = okQ ? line.substring(p[0] + 1, p[1]) : "desconocido";
+    smsDate   = okQ ? line.substring(p[4] + 1, p[5]) : "";
+
+    // Con AT+CSDH=1 sigue: ,<tooa>,<fo>,<pid>,<dcs>,... (dcs 8 = UCS2/Unicode)
+    smsIsUcs2 = false;
+    if (okQ) {
+      int dcs = csvField(line.substring(p[5] + 1), 4).toInt();
+      smsIsUcs2 = ((dcs & 0x0C) == 0x08);
+    }
+
+    waitingSmsBody = true;
+    return;
+  }
+
+  // +MSTK = comandos SIM Toolkit de la SIM (ruido normal del operador), se ignoran
+  if (line.startsWith("+MSTK")) return;
+
+  // Cualquier otra respuesta del módem se muestra como debug
+  Serial.println(line);
+}
+
+// Lo que escribas en la consola:
+//  - si empieza con "AT"  -> se manda tal cual al módem (comando AT)
+//  - cualquier otro texto -> se envía como SMS a SMS_DESTINATION
+String txLine;
+
+void handleConsoleLine(String line) {
+  line.trim();
+  if (line.length() == 0) return;
+
+  if (line.startsWith("AT") || line.startsWith("at")) {
+    SerialAT.print(line);
+    SerialAT.print("\r\n");
+  } else {
+    Serial.printf("Enviando SMS a %s: %s\n", SMS_DESTINATION, line.c_str());
+    bool ok = modem.sendSMS(SMS_DESTINATION, line);
+    Serial.println(ok ? "SMS enviado OK" : "Fallo el envio del SMS");
+  }
+}
+
+void setup() {
+  delay(10000);
+  Serial.begin(115200);
+  Serial.println("Init...");
+  SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
+
+  pinMode(BOARD_POWERON_PIN, OUTPUT);
+  digitalWrite(BOARD_POWERON_PIN, HIGH);
+
+  pinMode(MODEM_RESET_PIN, OUTPUT);
+  digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL); delay(100);
+  digitalWrite(MODEM_RESET_PIN, MODEM_RESET_LEVEL); delay(2600);
+  digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
+
+  pinMode(BOARD_PWRKEY_PIN, OUTPUT);
+  digitalWrite(BOARD_PWRKEY_PIN, LOW);
+  delay(100);
+  digitalWrite(BOARD_PWRKEY_PIN, HIGH);
+  delay(100);
+  digitalWrite(BOARD_PWRKEY_PIN, LOW);
+
+  Serial.println("Start modem...");
+  int retry = 0;
+  while (!modem.testAT(1000)) {
+    Serial.print(".");
+    if (retry++ > 10) {
+      digitalWrite(BOARD_PWRKEY_PIN, LOW);
+      delay(100);
+      digitalWrite(BOARD_PWRKEY_PIN, HIGH);
+      delay(1000);
+      digitalWrite(BOARD_PWRKEY_PIN, LOW);
+      retry = 0;
+    }
+  }
+  Serial.println();
+
+  SimStatus sim = SIM_ERROR;
+  while (sim != SIM_READY) {
+    sim = modem.getSimStatus();
+    switch (sim) {
+      case SIM_READY:
+        Serial.println("SIM card online");
+        break;
+      case SIM_LOCKED:
+        Serial.println("La SIM esta bloqueada. Desbloqueando...");
+        modem.simUnlock(SIM_PIN);
+        break;
+      default:
+        break;
+    }
+    delay(1000);
+  }
+
+  if (!modem.setNetworkMode(MODEM_NETWORK_AUTO)) {
+    Serial.println("Set network mode failed!");
+  }
+  Serial.print("Current network mode : ");
+  Serial.println(modem.getNetworkModeString());
+
+#ifdef NETWORK_APN
+  Serial.printf("Set network apn : %s\n", NETWORK_APN);
+  modem.sendAT(GF("+CGDCONT=1,\"IP\",\""), NETWORK_APN, "\"");
+  if (modem.waitResponse() != 1) {
+    Serial.println("Set network apn error !");
+  }
+#endif
+
+  // Esperar registro en la red
+  int16_t sq;
+  Serial.println("Esperando registro en la red...");
+  RegStatus status = REG_NO_RESULT;
+  while (status == REG_NO_RESULT || status == REG_SEARCHING || status == REG_UNREGISTERED) {
+    status = modem.getRegistrationStatus();
+    switch (status) {
+      case REG_UNREGISTERED:
+      case REG_SEARCHING:
+        sq = modem.getSignalQuality();
+        Serial.printf("[%lu] Signal Quality:%d\n", millis() / 1000, sq);
+        delay(1000);
+        break;
+      case REG_DENIED:
+        Serial.println("Registro rechazado, revisar APN / SIM");
+        return;
+      case REG_OK_HOME:
+        Serial.println("Registro OK");
+        break;
+      case REG_OK_ROAMING:
+        Serial.println("Registro OK (roaming)");
+        break;
+      default:
+        Serial.printf("Registration Status:%d\n", status);
+        delay(1000);
+        break;
+    }
+  }
+  Serial.println();
+
+  // ---------- Configurar SMS ----------
+  modem.sendAT("E0");                   // sin eco de comandos
+  modem.waitResponse();
+  modem.sendAT("+CMGF=1");              // modo texto
+  modem.waitResponse();
+  modem.sendAT("+CSCS=\"GSM\"");        // juego de caracteres
+  modem.waitResponse();
+  modem.sendAT("+CSDH=1");              // mostrar encabezado completo (incluye codificación)
+  modem.waitResponse();
+  // Entrega directa de los SMS entrantes por el puerto serie (+CMT)
+  modem.sendAT("+CNMI=2,2,0,0,0");
+  if (modem.waitResponse() != 1) {
+    Serial.println("No se pudo configurar la recepcion de SMS (CNMI)");
+  } else {
+    Serial.println("Recepcion de SMS habilitada");
+  }
+
+  // ---------- Enviar SMS ----------
+  Serial.printf("Enviando SMS a %s ...\n", SMS_DESTINATION);
+  bool ok = modem.sendSMS(SMS_DESTINATION, SMS_TEXT);
+  Serial.println(ok ? "SMS enviado OK" : "Fallo el envio del SMS");
+}
+
+void loop() {
+  // Leer del módem línea por línea
+  while (SerialAT.available()) {
+    char c = SerialAT.read();
+    if (c == '\n') {
+      handleModemLine(rxLine);
+      rxLine = "";
+    } else if (c != '\r') {
+      rxLine += c;
+    }
+  }
+
+  // Leer lo escrito en la consola, línea por línea
+  // Si el monitor no manda fin de línea, se procesa tras 400 ms sin recibir caracteres
+  static unsigned long lastConsoleCharMs = 0;
+  while (Serial.available()) {
+    char c = Serial.read();
+    lastConsoleCharMs = millis();
+    if (c == '\n' || c == '\r') {
+      handleConsoleLine(txLine);
+      txLine = "";
+    } else {
+      txLine += c;
+    }
+  }
+  if (txLine.length() > 0 && millis() - lastConsoleCharMs > 400) {
+    handleConsoleLine(txLine);
+    txLine = "";
+  }
+  delay(1);
+}
+
+#ifndef TINY_GSM_FORK_LIBRARY
+  #error "Falta TinyGSM-fork de lewisxhe: https://github.com/lewisxhe/TinyGSM-fork"
+#endif
